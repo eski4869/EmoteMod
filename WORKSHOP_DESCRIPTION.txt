@@ -1,0 +1,14 @@
+Emote Mod adds four simple emotes that appear above the Jump King character.
+
+Controls:
+
+Shift + Up: Happy
+Shift + Left: Sad
+Shift + Right: Thinking
+Shift + Down: Angry
+
+The selected emote is displayed for about two seconds.
+
+The mod creates four editable PNG files next to the mod. Existing files are not overwritten, so you can replace them with your own images and restart the game.
+
+GitHub: https://github.com/eski4869/EmoteMod
