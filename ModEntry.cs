@@ -23,6 +23,7 @@ namespace EmoteMod
             new EmoteDefinition("emote_thinking.png", "EmoteMod.Assets.Defaults.thinking.png"),
             new EmoteDefinition("emote_angry.png", "EmoteMod.Assets.Defaults.angry.png")
         };
+        private const string CommandTarget = "emote";
 
         private static string _modDirectory;
 
@@ -49,12 +50,14 @@ namespace EmoteMod
         [BeforeLevelLoad]
         public static void BeforeLevelLoad()
         {
+            BrokerCommandClient.Register(CommandTarget);
             WriteDefaultImagesIfMissing();
         }
 
         [OnLevelStart]
         public static void OnLevelStart()
         {
+            BrokerCommandClient.Register(CommandTarget);
             EmoteDisplay.EnsureAdded();
         }
 
@@ -113,8 +116,10 @@ namespace EmoteMod
         private const float DisplayDurationSeconds = 2f;
         private const int DrawSize = 32;
         private const int HeadOffset = 6;
+        private const string CommandTarget = "emote";
 
         private static EmoteDisplay _instance;
+        private static readonly Random Random = new Random();
 
         private readonly Dictionary<string, Texture2D> _textures =
             new Dictionary<string, Texture2D>();
@@ -148,6 +153,8 @@ namespace EmoteMod
         protected override void Update(float delta)
         {
             KeyboardState keyboardState = Keyboard.GetState();
+            ProcessBrokerCommand();
+
             bool shiftDown =
                 keyboardState.IsKeyDown(Keys.LeftShift) ||
                 keyboardState.IsKeyDown(Keys.RightShift);
@@ -265,10 +272,188 @@ namespace EmoteMod
             _remainingSeconds = DisplayDurationSeconds;
         }
 
+        private void ProcessBrokerCommand()
+        {
+            string command;
+
+            if (!BrokerCommandClient.TryDequeue(CommandTarget, out command))
+            {
+                return;
+            }
+
+            if (string.Equals(command, "random", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowRandom();
+                return;
+            }
+
+            if (string.Equals(command, "happy", StringComparison.OrdinalIgnoreCase))
+            {
+                Show("emote_happy.png");
+                return;
+            }
+
+            if (string.Equals(command, "sad", StringComparison.OrdinalIgnoreCase))
+            {
+                Show("emote_sad.png");
+                return;
+            }
+
+            if (string.Equals(command, "thinking", StringComparison.OrdinalIgnoreCase))
+            {
+                Show("emote_thinking.png");
+                return;
+            }
+
+            if (string.Equals(command, "angry", StringComparison.OrdinalIgnoreCase))
+            {
+                Show("emote_angry.png");
+            }
+        }
+
+        private void ShowRandom()
+        {
+            IReadOnlyList<EmoteDefinition> definitions = ModEntry.Definitions;
+
+            if (definitions.Count == 0)
+            {
+                return;
+            }
+
+            int index = Random.Next(definitions.Count);
+            Show(definitions[index].FileName);
+        }
+
         private bool WasKeyPressed(KeyboardState keyboardState, Keys key)
         {
             return keyboardState.IsKeyDown(key) &&
                 !_previousKeyboardState.IsKeyDown(key);
+        }
+    }
+
+    internal static class BrokerCommandClient
+    {
+        private const string RegistryTypeName = "JumpKingHttpCommandBroker.CommandQueueRegistry";
+
+        private static object _registry;
+        private static MethodInfo _registerMethod;
+        private static MethodInfo _tryDequeueMethod;
+        private static DateTime _nextResolveUtc = DateTime.MinValue;
+        private static bool _loggedMissingBroker;
+        private static bool _registered;
+
+        public static void Register(string target)
+        {
+            if (_registered)
+            {
+                return;
+            }
+
+            if (!Resolve())
+            {
+                return;
+            }
+
+            try
+            {
+                _registerMethod.Invoke(_registry, new object[] { target });
+                _registered = true;
+            }
+            catch (Exception ex)
+            {
+                JumpKing.Program.crashLog.AddErrorMessage(
+                    "EmoteMod broker register failed: " + ex.Message
+                );
+            }
+        }
+
+        public static bool TryDequeue(string target, out string command)
+        {
+            command = null;
+
+            if (!_registered)
+            {
+                Register(target);
+            }
+
+            if (!_registered || !Resolve())
+            {
+                return false;
+            }
+
+            try
+            {
+                object[] args = new object[] { target, null };
+                bool dequeued = (bool)_tryDequeueMethod.Invoke(_registry, args);
+                command = args[1] as string;
+                return dequeued;
+            }
+            catch (Exception ex)
+            {
+                JumpKing.Program.crashLog.AddErrorMessage(
+                    "EmoteMod broker dequeue failed: " + ex.Message
+                );
+                return false;
+            }
+        }
+
+        private static bool Resolve()
+        {
+            if (_registry != null)
+            {
+                return true;
+            }
+
+            DateTime nowUtc = DateTime.UtcNow;
+            if (nowUtc < _nextResolveUtc)
+            {
+                return false;
+            }
+
+            _nextResolveUtc = nowUtc.AddSeconds(1);
+
+            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            for (int i = 0; i < assemblies.Length; i++)
+            {
+                Type registryType = assemblies[i].GetType(RegistryTypeName, false);
+                if (registryType == null)
+                {
+                    continue;
+                }
+
+                FieldInfo instanceField = registryType.GetField(
+                    "Instance",
+                    BindingFlags.Public | BindingFlags.Static
+                );
+                MethodInfo registerMethod = registryType.GetMethod(
+                    "Register",
+                    new Type[] { typeof(string) }
+                );
+                MethodInfo tryDequeueMethod = registryType.GetMethod(
+                    "TryDequeue",
+                    new Type[] { typeof(string), typeof(string).MakeByRefType() }
+                );
+
+                if (instanceField == null || registerMethod == null || tryDequeueMethod == null)
+                {
+                    continue;
+                }
+
+                _registry = instanceField.GetValue(null);
+                _registerMethod = registerMethod;
+                _tryDequeueMethod = tryDequeueMethod;
+                return _registry != null;
+            }
+
+            if (!_loggedMissingBroker)
+            {
+                _loggedMissingBroker = true;
+                JumpKing.Program.crashLog.AddErrorMessage(
+                    "EmoteMod: JumpKingHttpCommandBroker is not loaded."
+                );
+            }
+
+            return false;
         }
     }
 }

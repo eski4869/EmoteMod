@@ -25,3 +25,17 @@ The mod creates the following PNG files next to the mod:
 Existing PNG files are not overwritten. Replace any file with your own transparent PNG and restart the game to use it.
 
 The images are displayed at `32 x 32` pixels in-game. Square transparent PNG files are recommended.
+
+## HTTP Command Broker
+
+If `JumpKingHttpCommandBroker` is loaded, Emote Mod registers the `emote` target.
+
+Examples:
+
+```text
+http://127.0.0.1:8081/command?target=emote&command=random
+http://127.0.0.1:8081/command?target=emote&command=happy
+http://127.0.0.1:8081/command?target=emote&command=sad
+http://127.0.0.1:8081/command?target=emote&command=thinking
+http://127.0.0.1:8081/command?target=emote&command=angry
+```
