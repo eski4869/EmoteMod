@@ -274,9 +274,15 @@ namespace EmoteMod
 
         private void ProcessBrokerCommand()
         {
+            IReadOnlyDictionary<string, string> parameters;
             string command;
 
-            if (!BrokerCommandClient.TryDequeue(CommandTarget, out command))
+            if (!BrokerCommandClient.TryDequeue(
+                CommandTarget,
+                out parameters
+            ) ||
+                !parameters.TryGetValue("command", out command) ||
+                string.IsNullOrWhiteSpace(command))
             {
                 return;
             }
@@ -338,7 +344,7 @@ namespace EmoteMod
         private static object _registry;
         private static MethodInfo _registerMethod;
         private static MethodInfo _tryDequeueMethod;
-        private static DateTime _nextResolveUtc = DateTime.MinValue;
+        private static int _lastResolveAssemblyCount = -1;
         private static bool _loggedMissingBroker;
         private static bool _registered;
 
@@ -367,9 +373,12 @@ namespace EmoteMod
             }
         }
 
-        public static bool TryDequeue(string target, out string command)
+        public static bool TryDequeue(
+            string target,
+            out IReadOnlyDictionary<string, string> parameters
+        )
         {
-            command = null;
+            parameters = null;
 
             if (!_registered)
             {
@@ -385,7 +394,7 @@ namespace EmoteMod
             {
                 object[] args = new object[] { target, null };
                 bool dequeued = (bool)_tryDequeueMethod.Invoke(_registry, args);
-                command = args[1] as string;
+                parameters = args[1] as IReadOnlyDictionary<string, string>;
                 return dequeued;
             }
             catch (Exception ex)
@@ -404,15 +413,13 @@ namespace EmoteMod
                 return true;
             }
 
-            DateTime nowUtc = DateTime.UtcNow;
-            if (nowUtc < _nextResolveUtc)
+            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            if (_lastResolveAssemblyCount == assemblies.Length)
             {
                 return false;
             }
 
-            _nextResolveUtc = nowUtc.AddSeconds(1);
-
-            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            _lastResolveAssemblyCount = assemblies.Length;
             for (int i = 0; i < assemblies.Length; i++)
             {
                 Type registryType = assemblies[i].GetType(RegistryTypeName, false);
@@ -431,7 +438,11 @@ namespace EmoteMod
                 );
                 MethodInfo tryDequeueMethod = registryType.GetMethod(
                     "TryDequeue",
-                    new Type[] { typeof(string), typeof(string).MakeByRefType() }
+                    new Type[]
+                    {
+                        typeof(string),
+                        typeof(IReadOnlyDictionary<string, string>).MakeByRefType()
+                    }
                 );
 
                 if (instanceField == null || registerMethod == null || tryDequeueMethod == null)
