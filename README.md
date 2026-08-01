@@ -39,3 +39,18 @@ http://127.0.0.1:8081/command?target=emote&command=sad
 http://127.0.0.1:8081/command?target=emote&command=thinking
 http://127.0.0.1:8081/command?target=emote&command=angry
 ```
+
+A `user` parameter names who the emote belongs to:
+
+```text
+http://127.0.0.1:8081/command?target=emote&user=alice&command=happy
+```
+
+## Local multiplayer
+
+With Local Multiplayer Mod installed, `user` is resolved to the player that user
+controls, and each player carries their own emote, so several can be shown at
+once. Split screen draws an emote only in the views showing its owner.
+
+Without that mod every user resolves to the only player, and the keyboard
+shortcuts always drive the local player, so single player is unaffected.

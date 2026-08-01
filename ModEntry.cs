@@ -58,6 +58,7 @@ namespace EmoteMod
         public static void OnLevelStart()
         {
             BrokerCommandClient.Register(CommandTarget);
+            TargetPlayerResolver.ResolveApi();
             EmoteDisplay.EnsureAdded();
         }
 
@@ -124,9 +125,20 @@ namespace EmoteMod
         private readonly Dictionary<string, Texture2D> _textures =
             new Dictionary<string, Texture2D>();
 
+        /// <summary>
+        /// One active emote per player. A single field would mean the players
+        /// share one emote, so whoever asked last would overwrite the others.
+        /// </summary>
+        private readonly Dictionary<PlayerEntity, ActiveEmote> _active =
+            new Dictionary<PlayerEntity, ActiveEmote>();
+
         private KeyboardState _previousKeyboardState;
-        private Texture2D _activeTexture;
-        private float _remainingSeconds;
+
+        private sealed class ActiveEmote
+        {
+            public Texture2D Texture;
+            public float RemainingSeconds;
+        }
 
         public static void EnsureAdded()
         {
@@ -161,58 +173,108 @@ namespace EmoteMod
 
             if (shiftDown)
             {
+                // The keyboard drives the player sitting at this machine.
+                PlayerEntity local = TargetPlayerResolver.PrimaryPlayer;
+
                 if (WasKeyPressed(keyboardState, Keys.Up))
                 {
-                    Show("emote_happy.png");
+                    Show(local, "emote_happy.png");
                 }
                 else if (WasKeyPressed(keyboardState, Keys.Left))
                 {
-                    Show("emote_sad.png");
+                    Show(local, "emote_sad.png");
                 }
                 else if (WasKeyPressed(keyboardState, Keys.Right))
                 {
-                    Show("emote_thinking.png");
+                    Show(local, "emote_thinking.png");
                 }
                 else if (WasKeyPressed(keyboardState, Keys.Down))
                 {
-                    Show("emote_angry.png");
+                    Show(local, "emote_angry.png");
                 }
             }
 
             _previousKeyboardState = keyboardState;
+            Expire(delta);
+        }
 
-            if (_remainingSeconds > 0f)
+        private void Expire(float delta)
+        {
+            List<PlayerEntity> finished = null;
+
+            foreach (KeyValuePair<PlayerEntity, ActiveEmote> entry in _active)
             {
-                _remainingSeconds = Math.Max(0f, _remainingSeconds - delta);
+                ActiveEmote emote = entry.Value;
+                emote.RemainingSeconds = Math.Max(
+                    0f,
+                    emote.RemainingSeconds - delta
+                );
+
+                if (emote.RemainingSeconds > 0f && entry.Key.IsAlive)
+                {
+                    continue;
+                }
+
+                if (finished == null)
+                {
+                    finished = new List<PlayerEntity>();
+                }
+
+                finished.Add(entry.Key);
+            }
+
+            if (finished == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < finished.Count; i++)
+            {
+                _active.Remove(finished[i]);
             }
         }
 
         public void ForegroundDraw()
         {
-            if (_activeTexture == null || _remainingSeconds <= 0f)
+            if (Game1.instance == null || _active.Count == 0)
             {
                 return;
             }
 
-            PlayerEntity player = EntityManager.instance.Find<PlayerEntity>();
-
-            if (player == null || Game1.instance == null)
+            foreach (KeyValuePair<PlayerEntity, ActiveEmote> entry in _active)
             {
-                return;
+                PlayerEntity player = entry.Key;
+                ActiveEmote emote = entry.Value;
+
+                if (player == null || !player.IsAlive ||
+                    emote.Texture == null || emote.RemainingSeconds <= 0f)
+                {
+                    continue;
+                }
+
+                // Split screen draws this once per view. Without asking whose
+                // view it is, every view would show every emote - and because
+                // the position is clamped on screen below, an emote belonging to
+                // a player this view is not showing would still be pinned to the
+                // edge rather than falling outside it.
+                if (!TargetPlayerResolver.IsPlayerInCurrentView(player))
+                {
+                    continue;
+                }
+
+                Rectangle hitbox = Camera.TransformRect(player.m_body.GetHitbox());
+                int x = hitbox.Center.X - DrawSize / 2;
+                int y = hitbox.Top - DrawSize - HeadOffset;
+
+                x = Math.Max(2, Math.Min(Game1.WIDTH - DrawSize - 2, x));
+                y = Math.Max(2, Math.Min(Game1.HEIGHT - DrawSize - 2, y));
+
+                Game1.spriteBatch.Draw(
+                    emote.Texture,
+                    new Rectangle(x, y, DrawSize, DrawSize),
+                    Color.White
+                );
             }
-
-            Rectangle hitbox = Camera.TransformRect(player.m_body.GetHitbox());
-            int x = hitbox.Center.X - DrawSize / 2;
-            int y = hitbox.Top - DrawSize - HeadOffset;
-
-            x = Math.Max(2, Math.Min(Game1.WIDTH - DrawSize - 2, x));
-            y = Math.Max(2, Math.Min(Game1.HEIGHT - DrawSize - 2, y));
-
-            Game1.spriteBatch.Draw(
-                _activeTexture,
-                new Rectangle(x, y, DrawSize, DrawSize),
-                Color.White
-            );
         }
 
         protected override void OnDestroy()
@@ -226,7 +288,7 @@ namespace EmoteMod
             }
 
             _textures.Clear();
-            _activeTexture = null;
+            _active.Clear();
 
             if (ReferenceEquals(_instance, this))
             {
@@ -259,17 +321,25 @@ namespace EmoteMod
             }
         }
 
-        private void Show(string fileName)
+        private void Show(PlayerEntity owner, string fileName)
         {
             Texture2D texture;
 
-            if (!_textures.TryGetValue(fileName, out texture))
+            if (owner == null || !owner.IsAlive ||
+                !_textures.TryGetValue(fileName, out texture))
             {
                 return;
             }
 
-            _activeTexture = texture;
-            _remainingSeconds = DisplayDurationSeconds;
+            ActiveEmote emote;
+            if (!_active.TryGetValue(owner, out emote))
+            {
+                emote = new ActiveEmote();
+                _active[owner] = emote;
+            }
+
+            emote.Texture = texture;
+            emote.RemainingSeconds = DisplayDurationSeconds;
         }
 
         private void ProcessBrokerCommand()
@@ -287,37 +357,48 @@ namespace EmoteMod
                 return;
             }
 
+            // The emote belongs to the user who asked for it. In single player
+            // every user resolves to the only player, so this is a no-op there.
+            string user;
+            parameters.TryGetValue("user", out user);
+            PlayerEntity owner = TargetPlayerResolver.ResolvePlayer(user);
+
+            if (owner == null)
+            {
+                return;
+            }
+
             if (string.Equals(command, "random", StringComparison.OrdinalIgnoreCase))
             {
-                ShowRandom();
+                ShowRandom(owner);
                 return;
             }
 
             if (string.Equals(command, "happy", StringComparison.OrdinalIgnoreCase))
             {
-                Show("emote_happy.png");
+                Show(owner, "emote_happy.png");
                 return;
             }
 
             if (string.Equals(command, "sad", StringComparison.OrdinalIgnoreCase))
             {
-                Show("emote_sad.png");
+                Show(owner, "emote_sad.png");
                 return;
             }
 
             if (string.Equals(command, "thinking", StringComparison.OrdinalIgnoreCase))
             {
-                Show("emote_thinking.png");
+                Show(owner, "emote_thinking.png");
                 return;
             }
 
             if (string.Equals(command, "angry", StringComparison.OrdinalIgnoreCase))
             {
-                Show("emote_angry.png");
+                Show(owner, "emote_angry.png");
             }
         }
 
-        private void ShowRandom()
+        private void ShowRandom(PlayerEntity owner)
         {
             IReadOnlyList<EmoteDefinition> definitions = ModEntry.Definitions;
 
@@ -327,7 +408,7 @@ namespace EmoteMod
             }
 
             int index = Random.Next(definitions.Count);
-            Show(definitions[index].FileName);
+            Show(owner, definitions[index].FileName);
         }
 
         private bool WasKeyPressed(KeyboardState keyboardState, Keys key)
